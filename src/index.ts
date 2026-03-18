@@ -252,13 +252,13 @@ Priority: 1) Buy card 2) Take gems for noble 3) Reserve to block
 Return ONLY valid JSON:
 {{
   "action": "TAKE_GEMS"|"PURCHASE_CARD"|"RESERVE_CARD"|"DISCARD_GEMS"|"SELECT_NOBLE",
-  "payload": {
-   TAKE_GEMS: { "gems": { "White": 1, "Blue": 1, "Green": 1 } }
-   PURCHASE_CARD: { "cardId": "<cardId>" }
-   RESERVE_CARD: { "cardId": "<cardId>" }
-   DISCARD_GEMS: { "gems": { "White": 1 } }
-   SELECT_NOBLE: { "nobleId": "<nobleId>" }
-},
+  "payload": {{
+    TAKE_GEMS: {{ "gems": {{ "White": 1, "Blue": 1, "Green": 1 }} }}
+    PURCHASE_CARD: {{ "cardId": "<cardId>" }}
+    RESERVE_CARD: {{ "cardId": "<cardId>" }}
+    DISCARD_GEMS: {{ "gems": {{ "White": 1 }} }}
+    SELECT_NOBLE: {{ "nobleId": "<nobleId>" }}
+  }},
   "reasoning": "<max 15 words>"
 }}`,
   ],
