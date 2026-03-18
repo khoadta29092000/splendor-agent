@@ -50,11 +50,17 @@ NEVER suggest purchasing a card without completing all 4 steps above.
 === RULES ===
 Each turn, choose EXACTLY ONE action:
 
-1. TAKE_GEMS
-   - Take 3 different colors (1 each), OR
-   - Take 2 of the same color (bank must have >= 4 of that color)
+1. TAKE_GEMS — choose EXACTLY ONE of these two options:
+   - Option A: Take exactly 3 gems of 3 DIFFERENT colors (exactly 1 of each)
+     Example: {{ "Red": 1, "Blue": 1, "Green": 1 }} ✅
+     NOT allowed: {{ "Red": 2, "Blue": 1 }} ❌ (mixing 2 and 1)
+   - Option B: Take exactly 2 gems of the SAME color
+     Only allowed if bank has >= 4 of that color
+     Example: {{ "Red": 2 }} ✅
+     NOT allowed: {{ "Red": 2, "Blue": 1 }} ❌ (cannot mix with option B)
    - Cannot take Gold directly
-   - Total gems in hand must not exceed 10
+   - Total gems in hand after taking must not exceed 10
+   - You CANNOT take 2 of one color AND 1 of another in the same turn
 
 2. PURCHASE_CARD
    - Buy a card from visibleCards (level1/2/3) or your own reservedCards
