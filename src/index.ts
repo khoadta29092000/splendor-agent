@@ -175,8 +175,11 @@ app.post("/decide", async (req: Request, res: Response) => {
 // ─── Health check ─────────────────────────────────────────────
 app.get("/health", (_: Request, res: Response) => res.json({ status: "ok" }));
 
+const PORT = process.env.PORT || 10000;
+console.log(`[Startup] PORT env = ${process.env.PORT}`);
+console.log(`[Startup] Using PORT = ${PORT}`);
+
 // ─── Start ────────────────────────────────────────────────────
-const PORT = process.env.PORT || 4000;
 app.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`🤖 Splendor LangChain Agent → http://localhost:${PORT}`);
   console.log(`   POST /decide  — receive gameState, return action`);
