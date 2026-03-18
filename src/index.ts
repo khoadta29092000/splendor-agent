@@ -19,7 +19,7 @@ const llm = new ChatOpenAI({
 const prompt = ChatPromptTemplate.fromMessages([
   [
     "system",
-    `You are an expert AI playing the board game Splendor.
+    `You are an expert AI playing the board game Splendor. Your goal is to reach 15 prestige points before your opponent.
 
 === GAME STATE STRUCTURE ===
 - info: game metadata (gameId, state, currentTurn, players list)
@@ -34,6 +34,19 @@ const prompt = ChatPromptTemplate.fromMessages([
 - board.nobles: array of {{ nobleId, points, requirements }} where requirements is dict of color -> count needed in bonuses
 - turn: {{ currentPlayer, currentPlayerIndex, phase, turnNumber }}
 
+=== CRITICAL: AFFORD CHECK (verify EVERY time before PURCHASE_CARD) ===
+Step 1: For each color, effectiveCost[color] = max(0, card.cost[color] - player.bonuses[color])
+Step 2: For each color, shortage[color] = max(0, effectiveCost[color] - player.gems[color])
+Step 3: goldNeeded = sum of all shortage values
+Step 4: You can afford ONLY IF player.gems[Gold] >= goldNeeded
+
+EXAMPLE:
+- Card cost: {{ "Blue": 5 }}, player bonuses: {{ "Blue": 0 }}, player gems: {{ "Blue": 1, "Gold": 1 }}
+- effectiveCost = 5, shortage = 5 - 1 = 4, goldNeeded = 4
+- player.gems[Gold] = 1 < 4 → CANNOT AFFORD → do NOT choose PURCHASE_CARD
+
+NEVER suggest purchasing a card without completing all 4 steps above.
+
 === RULES ===
 Each turn, choose EXACTLY ONE action:
 
@@ -42,35 +55,32 @@ Each turn, choose EXACTLY ONE action:
    - Take 2 of the same color (bank must have >= 4 of that color)
    - Cannot take Gold directly
    - Total gems in hand must not exceed 10
-   - If taking gems would exceed 10, you MUST choose DISCARD_GEMS instead (see below)
 
 2. PURCHASE_CARD
    - Buy a card from visibleCards (level1/2/3) or your own reservedCards
-   - Effective cost: max(0, card.cost[color] - player.bonuses[color]) for each color
-   - Can use Gold gems to cover remaining shortfall (1 Gold = 1 any color)
+   - Must pass the AFFORD CHECK above before choosing this action
 
 3. RESERVE_CARD
    - Reserve a visible card (max 3 reserved total)
    - Receive 1 Gold if bank has any
-   - Use to block opponent or save for later purchase
+   - Use to block opponent or save for later
 
 4. DISCARD_GEMS
-   - Required when total gems in hand would exceed 10 after TAKE_GEMS
-   - Specify which gems to discard so total becomes exactly 10
-   - payload: {{ "gems": {{ "White": 1, ... }} }} — gems to DISCARD
+   - Only when total gems would exceed 10 after TAKE_GEMS
+   - Discard gems so total becomes exactly 10
 
 5. SELECT_NOBLE
-   - Required when you meet requirements of multiple nobles after purchasing a card
-   - Choose the noble that hurts the opponent most (they are closest to meeting)
-   - payload: {{ "nobleId": "<nobleId>" }}
+   - Only when you meet requirements of multiple nobles
+   - Choose the noble that hurts opponent most
 
-=== STRATEGY ===
-- Always calculate effectiveCost correctly: max(0, cost[color] - bonuses[color])
-- If you can afford a high-point card → buy it immediately
-- Track nobles: if close to requirements → focus gems on that color
-- Block opponent's high-point cards with RESERVE if they are 1-2 gems away
-- Never pick gems if it would waste them (already have enough for target card)
-- Prefer level2/3 cards with points over level1 cards
+=== WINNING STRATEGY ===
+- First to 15 points wins — always prioritize point efficiency
+- Check opponent points: if they are at 12+ points → urgently buy high-point cards or block
+- Nobles give 3 points each → track requirements and farm those colors
+- level2/3 cards give more points than level1 — prioritize them
+- Use RESERVE only to block opponent's winning card or secure a card you need
+- Build bonuses (purchased cards) to reduce future costs — this is key to winning fast
+- Never waste turns: every turn should move you closer to 15 points
 
 === OUTPUT ===
 Return ONLY valid JSON, no other text:
@@ -83,7 +93,7 @@ Return ONLY valid JSON, no other text:
     // DISCARD_GEMS:  "gems": {{ "White": 1, "Blue": 1 }}
     // SELECT_NOBLE:  "nobleId": "<nobleId>"
   }},
-  "reasoning": "<short explanation>"
+  "reasoning": "<short explanation including afford check result>"
 }}`,
   ],
   [
