@@ -10,7 +10,7 @@ app.use(express.json({ limit: "1mb" }));
 
 // ─── LLM ─────────────────────────────────────────────────────
 const llm = new ChatOpenAI({
-  modelName: "gpt-4o",
+  modelName: "gpt-4o-mini",
   temperature: 0.1,
   openAIApiKey: process.env.OPENAI_API_KEY,
 });
@@ -111,6 +111,7 @@ const ActionSchema = z.object({
 app.post("/decide", async (req: Request, res: Response) => {
   try {
     const { gameState } = req.body;
+    console.log(`gamestate`, gameState);
     if (!gameState) {
       return res.status(400).json({ error: "gameState is required" });
     }
