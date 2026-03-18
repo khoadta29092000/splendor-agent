@@ -15,102 +15,266 @@ const llm = new ChatOpenAI({
   openAIApiKey: process.env.OPENAI_API_KEY,
 });
 
-// ─── Prompt ──────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────
+interface Gems {
+  White?: number;
+  Blue?: number;
+  Green?: number;
+  Red?: number;
+  Black?: number;
+  Gold?: number;
+  [key: string]: number | undefined;
+}
+interface Card {
+  cardId: string;
+  level: number;
+  points: number;
+  bonusColor: string;
+  cost: Gems;
+}
+interface Noble {
+  nobleId: string;
+  points: number;
+  requirements: Gems;
+}
+interface Player {
+  playerId: string;
+  gems: Gems;
+  bonuses: Gems;
+  reservedCards: string[];
+  purchasedCards: string[];
+  points: number;
+}
+interface GameState {
+  players: Record<string, Player>;
+  board: {
+    gemBank: Gems;
+    visibleCards: { level1: Card[]; level2: Card[]; level3: Card[] };
+    nobles: Noble[];
+  };
+  turn: { currentPlayer: string; turnNumber: number };
+}
+interface SuggestedAction {
+  action: string;
+  payload: Record<string, unknown>;
+  score: number;
+  reason: string;
+}
+
+// ─── Heuristic Helpers ────────────────────────────────────────
+const COLORS = ["White", "Blue", "Green", "Red", "Black"];
+const getGem = (gems: Gems, color: string): number => gems[color] ?? 0;
+const totalGems = (gems: Gems): number =>
+  Object.values(gems).reduce((a, b) => (a ?? 0) + (b ?? 0), 0) as number;
+
+function affordCheck(card: Card, player: Player) {
+  const shortage: Gems = {};
+  let goldNeeded = 0;
+  for (const color of COLORS) {
+    const effective = Math.max(
+      0,
+      getGem(card.cost, color) - getGem(player.bonuses, color),
+    );
+    const short = Math.max(0, effective - getGem(player.gems, color));
+    if (short > 0) {
+      shortage[color] = short;
+      goldNeeded += short;
+    }
+  }
+  return {
+    canAfford: getGem(player.gems, "Gold") >= goldNeeded,
+    goldNeeded,
+    shortage,
+  };
+}
+
+function totalShortage(card: Card, player: Player): number {
+  return Object.values(affordCheck(card, player).shortage).reduce(
+    (a, b) => (a ?? 0) + (b ?? 0),
+    0,
+  ) as number;
+}
+
+function nearestNoble(player: Player, nobles: Noble[]) {
+  if (!nobles?.length) return null;
+  return nobles.reduce(
+    (best, noble) => {
+      const missing = COLORS.reduce(
+        (sum, c) =>
+          sum +
+          Math.max(
+            0,
+            getGem(noble.requirements, c) - getGem(player.bonuses, c),
+          ),
+        0,
+      );
+      return !best || missing < best.missing ? { noble, missing } : best;
+    },
+    null as { noble: Noble; missing: number } | null,
+  );
+}
+
+function colorsNeededForNoble(player: Player, nobles: Noble[]): string[] {
+  const nearest = nearestNoble(player, nobles);
+  if (!nearest) return [];
+  return COLORS.filter(
+    (c) => getGem(nearest.noble.requirements, c) > getGem(player.bonuses, c),
+  );
+}
+
+function scoreCard(
+  card: Card,
+  player: Player,
+  nobles: Noble[],
+  opponentPoints: number,
+): number {
+  const { canAfford } = affordCheck(card, player);
+  const shortage = totalShortage(card, player);
+  const neededColors = colorsNeededForNoble(player, nobles);
+  let score = card.points * 100 + card.level * 10 - shortage * 20;
+  if (canAfford) score += 200;
+  if (neededColors.includes(card.bonusColor)) score += 80;
+  if (opponentPoints >= 12) score += card.points * 50;
+  return score;
+}
+
+function getAllVisibleCards(state: GameState): Card[] {
+  return [
+    ...state.board.visibleCards.level1,
+    ...state.board.visibleCards.level2,
+    ...state.board.visibleCards.level3,
+  ];
+}
+
+// ─── Suggestion Generators ────────────────────────────────────
+
+function suggestPurchase(
+  player: Player,
+  state: GameState,
+  opponentPoints: number,
+): SuggestedAction[] {
+  return getAllVisibleCards(state)
+    .filter((c) => affordCheck(c, player).canAfford)
+    .map((card) => ({
+      action: "PURCHASE_CARD",
+      payload: { cardId: card.cardId },
+      score: scoreCard(card, player, state.board.nobles, opponentPoints) + 300,
+      reason: `Buy lv${card.level} +${card.points}pts bonus:${card.bonusColor}`,
+    }));
+}
+
+function suggestTakeGems(player: Player, state: GameState): SuggestedAction[] {
+  const bank = state.board.gemBank;
+  const current = totalGems(player.gems);
+  const neededColors = colorsNeededForNoble(player, state.board.nobles);
+  const suggestions: SuggestedAction[] = [];
+
+  // Option A: 2 same color (bank >= 4)
+  for (const color of COLORS) {
+    if (getGem(bank, color) >= 4 && current + 2 <= 10) {
+      suggestions.push({
+        action: "TAKE_GEMS",
+        payload: { gems: { [color]: 2 } },
+        score: neededColors.includes(color) ? 150 : 80,
+        reason: `Take 2 ${color}`,
+      });
+    }
+  }
+
+  // Option B: 3 different colors
+  const available = COLORS.filter((c) => getGem(bank, c) > 0);
+  if (available.length >= 3 && current + 3 <= 10) {
+    const prioritized = [
+      ...neededColors.filter((c) => available.includes(c)),
+      ...available.filter((c) => !neededColors.includes(c)),
+    ].slice(0, 3);
+    if (prioritized.length === 3) {
+      const gems: Gems = {};
+      prioritized.forEach((c) => (gems[c] = 1));
+      suggestions.push({
+        action: "TAKE_GEMS",
+        payload: { gems },
+        score: neededColors.some((c) => prioritized.includes(c)) ? 120 : 70,
+        reason: `Take 3 different: ${prioritized.join(", ")}`,
+      });
+    }
+  }
+
+  return suggestions;
+}
+
+function suggestReserve(
+  player: Player,
+  state: GameState,
+  opponentPoints: number,
+): SuggestedAction[] {
+  if (player.reservedCards.length >= 3) return [];
+  return getAllVisibleCards(state)
+    .filter((c) => c.points >= 3)
+    .sort((a, b) => b.points - a.points)
+    .slice(0, 2)
+    .map((card) => ({
+      action: "RESERVE_CARD",
+      payload: { cardId: card.cardId },
+      score: opponentPoints >= 10 ? 100 : 30,
+      reason: `Reserve lv${card.level} +${card.points}pts`,
+    }));
+}
+
+function generateSuggestions(
+  state: GameState,
+  botId: string,
+): SuggestedAction[] {
+  const player = state.players[botId];
+  if (!player) return [];
+  const opponentId = Object.keys(state.players).find((id) => id !== botId);
+  const opponentPoints = opponentId
+    ? (state.players[opponentId]?.points ?? 0)
+    : 0;
+
+  return [
+    ...suggestPurchase(player, state, opponentPoints),
+    ...suggestTakeGems(player, state),
+    ...suggestReserve(player, state, opponentPoints),
+  ]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+}
+
+// ─── Prompt (LLM chỉ chọn từ suggestions) ────────────────────
 const prompt = ChatPromptTemplate.fromMessages([
   [
     "system",
-    `You are an expert AI playing the board game Splendor. Your goal is to reach 15 prestige points before your opponent.
+    `You are playing Splendor. Goal: reach 15 prestige points first.
+The Heuristic Engine has pre-calculated valid actions. Pick the BEST one.
 
-=== GAME STATE STRUCTURE ===
-- info: game metadata (gameId, state, currentTurn, players list)
-- players: dict playerId -> {{ gems, bonuses, reservedCards, purchasedCards, points }}
-  - gems: current gems in hand e.g. {{ "White": 2, "Blue": 1, ... }}
-  - bonuses: permanent discounts from purchased cards e.g. {{ "White": 1, ... }}
-  - reservedCards: array of cardId (max 3)
-  - purchasedCards: array of cardId
-  - points: current prestige points
-- board.gemBank: gems remaining on the board e.g. {{ "White": 4, "Gold": 5, ... }}
-- board.visibleCards: {{ level1, level2, level3 }} each is array of {{ cardId, level, points, bonusColor, cost }}
-- board.nobles: array of {{ nobleId, points, requirements }} where requirements is dict of color -> count needed in bonuses
-- turn: {{ currentPlayer, currentPlayerIndex, phase, turnNumber }}
-
-=== CRITICAL: AFFORD CHECK (verify EVERY time before PURCHASE_CARD) ===
-Step 1: For each color, effectiveCost[color] = max(0, card.cost[color] - player.bonuses[color])
-Step 2: For each color, shortage[color] = max(0, effectiveCost[color] - player.gems[color])
-Step 3: goldNeeded = sum of all shortage values
-Step 4: You can afford ONLY IF player.gems[Gold] >= goldNeeded
-
-EXAMPLE:
-- Card cost: {{ "Blue": 5 }}, player bonuses: {{ "Blue": 0 }}, player gems: {{ "Blue": 1, "Gold": 1 }}
-- effectiveCost = 5, shortage = 5 - 1 = 4, goldNeeded = 4
-- player.gems[Gold] = 1 < 4 → CANNOT AFFORD → do NOT choose PURCHASE_CARD
-
-NEVER suggest purchasing a card without completing all 4 steps above.
-
-=== RULES ===
-Each turn, choose EXACTLY ONE action:
-
-1. TAKE_GEMS — choose EXACTLY ONE of these two options:
-   - Option A: Take exactly 3 gems of 3 DIFFERENT colors (exactly 1 of each)
-     Example: {{ "Red": 1, "Blue": 1, "Green": 1 }} ✅
-     NOT allowed: {{ "Red": 2, "Blue": 1 }} ❌ (mixing 2 and 1)
-   - Option B: Take exactly 2 gems of the SAME color
-     Only allowed if bank has >= 4 of that color
-     Example: {{ "Red": 2 }} ✅
-     NOT allowed: {{ "Red": 2, "Blue": 1 }} ❌ (cannot mix with option B)
-   - Cannot take Gold directly
-   - Total gems in hand after taking must not exceed 10
-   - You CANNOT take 2 of one color AND 1 of another in the same turn
-
-2. PURCHASE_CARD
-   - Buy a card from visibleCards (level1/2/3) or your own reservedCards
-   - Must pass the AFFORD CHECK above before choosing this action
-
-3. RESERVE_CARD
-   - Reserve a visible card (max 3 reserved total)
-   - Receive 1 Gold if bank has any
-   - Use to block opponent or save for later
-
-4. DISCARD_GEMS
-   - Only when total gems would exceed 10 after TAKE_GEMS
-   - Discard gems so total becomes exactly 10
-
-5. SELECT_NOBLE
-   - Only when you meet requirements of multiple nobles
-   - Choose the noble that hurts opponent most
-
-=== WINNING STRATEGY ===
-- First to 15 points wins — always prioritize point efficiency
-- Check opponent points: if they are at 12+ points → urgently buy high-point cards or block
-- Nobles give 3 points each → track requirements and farm those colors
-- level2/3 cards give more points than level1 — prioritize them
-- Use RESERVE only to block opponent's winning card or secure a card you need
-- Build bonuses (purchased cards) to reduce future costs — this is key to winning fast
-- Never waste turns: every turn should move you closer to 15 points
-
-=== OUTPUT ===
-Return ONLY valid JSON, no other text:
+Priority: 1) Buy card 2) Take gems for noble 3) Reserve to block
+Return ONLY valid JSON:
 {{
-  "action": "TAKE_GEMS" | "PURCHASE_CARD" | "RESERVE_CARD" | "DISCARD_GEMS" | "SELECT_NOBLE",
-  "payload": {{
-    // TAKE_GEMS:     "gems": {{ "White": 1, "Blue": 1, "Green": 1 }}
-    // PURCHASE_CARD: "cardId": "<cardId>"
-    // RESERVE_CARD:  "cardId": "<cardId>"
-    // DISCARD_GEMS:  "gems": {{ "White": 1, "Blue": 1 }}
-    // SELECT_NOBLE:  "nobleId": "<nobleId>"
-  }},
-  "reasoning": "<short explanation including afford check result>"
+  "action": "TAKE_GEMS"|"PURCHASE_CARD"|"RESERVE_CARD"|"DISCARD_GEMS"|"SELECT_NOBLE",
+  "payload": {
+   TAKE_GEMS: { "gems": { "White": 1, "Blue": 1, "Green": 1 } }
+   PURCHASE_CARD: { "cardId": "<cardId>" }
+   RESERVE_CARD: { "cardId": "<cardId>" }
+   DISCARD_GEMS: { "gems": { "White": 1 } }
+   SELECT_NOBLE: { "nobleId": "<nobleId>" }
+},
+  "reasoning": "<max 15 words>"
 }}`,
   ],
   [
     "human",
-    `Current game state (it is {botId}'s turn):\n\`\`\`json\n{gameState}\n\`\`\`\nChoose the best action.`,
+    `Bot: {botId} | Turn: {turnNumber} | Points: {botPoints} | Gems({totalGems}): {botGems}
+Opponent points: {opponentPoints} | {nobleProgress}
+
+SUGGESTED ACTIONS (sorted by score):
+{suggestions}
+
+Choose the best action.`,
   ],
 ]);
 
 const chain = prompt.pipe(llm).pipe(new StringOutputParser());
-
-// ─── Schema ───────────────────────────────────────────────────
 const ActionSchema = z.object({
   action: z.enum([
     "TAKE_GEMS",
@@ -126,35 +290,76 @@ const ActionSchema = z.object({
 // ─── POST /decide ─────────────────────────────────────────────
 app.post("/decide", async (req: Request, res: Response) => {
   try {
-    const { gameState } = req.body;
-    console.log(`gamestate`, gameState);
-    if (!gameState) {
+    const { gameState } = req.body as { gameState: GameState };
+    if (!gameState)
       return res.status(400).json({ error: "gameState is required" });
-    }
 
-    const botId: string = gameState?.turn?.currentPlayer ?? "BOT";
-    const botState = gameState?.players?.[botId];
-    const totalGems = botState?.gems
-      ? Object.values(botState.gems as Record<string, number>).reduce(
-          (a: number, b: number) => a + b,
-          0,
-        )
+    const botId = gameState?.turn?.currentPlayer ?? "BOT";
+    const player = gameState?.players?.[botId];
+    const opponentId = Object.keys(gameState.players).find(
+      (id) => id !== botId,
+    );
+    const opponentPoints = opponentId
+      ? (gameState.players[opponentId]?.points ?? 0)
       : 0;
+    const totalGemsCount = player ? totalGems(player.gems) : 0;
 
     console.log(
-      `\n[Agent] Turn #${gameState?.turn?.turnNumber} | Bot: ${botId}`,
+      `\n[Agent] Turn #${gameState.turn?.turnNumber} | Bot: ${botId} | Points: ${player?.points} | Gems: ${totalGemsCount}`,
     );
-    if (botState) {
-      console.log(
-        `        gems(${totalGems}): ${JSON.stringify(botState.gems)}`,
-      );
-      console.log(`        bonuses: ${JSON.stringify(botState.bonuses)}`);
-      console.log(`        points: ${botState.points}`);
+
+    // Heuristic Engine
+    const suggestions = generateSuggestions(gameState, botId);
+    console.log(
+      `[Heuristic] Top suggestions:`,
+      suggestions.map((s) => `${s.action}(${s.score})`).join(", "),
+    );
+
+    // Fast path: nếu top suggestion là PURCHASE score cao → skip LLM
+    if (
+      suggestions[0]?.score >= 500 &&
+      suggestions[0]?.action === "PURCHASE_CARD"
+    ) {
+      console.log(`[Heuristic] Fast purchase, skipping LLM`);
+      return res.json({
+        action: suggestions[0].action,
+        payload: suggestions[0].payload,
+        reasoning: suggestions[0].reason,
+      });
     }
 
+    // Fallback nếu không có suggestions
+    if (!suggestions.length) {
+      return res.json({
+        action: "TAKE_GEMS",
+        payload: { gems: { White: 1, Blue: 1, Green: 1 } },
+        reasoning: "no suggestions fallback",
+      });
+    }
+
+    // Noble progress
+    const nearest = player
+      ? nearestNoble(player, gameState.board?.nobles ?? [])
+      : null;
+    const nobleProgress = nearest
+      ? `Nearest noble: ${nearest.missing} gems away`
+      : "No nobles";
+
+    // LLM chọn từ suggestions
     const raw = await chain.invoke({
       botId,
-      gameState: JSON.stringify(gameState, null, 2),
+      turnNumber: gameState.turn?.turnNumber,
+      botPoints: player?.points ?? 0,
+      totalGems: totalGemsCount,
+      botGems: JSON.stringify(player?.gems ?? {}),
+      opponentPoints,
+      nobleProgress,
+      suggestions: suggestions
+        .map(
+          (s, i) =>
+            `${i + 1}. ${s.action} | ${JSON.stringify(s.payload)} | score:${s.score} | ${s.reason}`,
+        )
+        .join("\n"),
     });
 
     const cleaned = raw.replace(/```json\n?|```\n?/g, "").trim();
@@ -172,14 +377,12 @@ app.post("/decide", async (req: Request, res: Response) => {
   }
 });
 
-// ─── Health check ─────────────────────────────────────────────
 app.get("/health", (_: Request, res: Response) => res.json({ status: "ok" }));
 
 const PORT = process.env.PORT || 10000;
 console.log(`[Startup] PORT env = ${process.env.PORT}`);
 console.log(`[Startup] Using PORT = ${PORT}`);
 
-// ─── Start ────────────────────────────────────────────────────
 app.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`🤖 Splendor LangChain Agent → http://localhost:${PORT}`);
   console.log(`   POST /decide  — receive gameState, return action`);
