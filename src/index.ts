@@ -160,7 +160,7 @@ app.get("/health", (_: Request, res: Response) => res.json({ status: "ok" }));
 
 // ─── Start ────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+app.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`🤖 Splendor LangChain Agent → http://localhost:${PORT}`);
   console.log(`   POST /decide  — receive gameState, return action`);
 });
