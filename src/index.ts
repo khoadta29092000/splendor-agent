@@ -8,14 +8,12 @@ import { z } from "zod";
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
-// ─── LLM ─────────────────────────────────────────────────────
 const llm = new ChatOpenAI({
   modelName: "gpt-4o-mini",
   temperature: 0.1,
   openAIApiKey: process.env.OPENAI_API_KEY,
 });
 
-// ─── Types ────────────────────────────────────────────────────
 interface Gems {
   White?: number;
   Blue?: number;
@@ -61,52 +59,40 @@ interface SuggestedAction {
   reason: string;
 }
 
-// ─── Heuristic Helpers ────────────────────────────────────────
 const COLORS = ["White", "Blue", "Green", "Red", "Black"];
 const getGem = (gems: Gems, color: string): number => gems[color] ?? 0;
 const totalGems = (gems: Gems): number =>
   Object.values(gems).reduce((a, b) => (a ?? 0) + (b ?? 0), 0) as number;
 
+// Kiểm tra player có đủ gem/bonus để mua card không, trả về lượng gold cần bù
 function affordCheck(card: Card, player: Player) {
   const shortage: Gems = {};
   let goldNeeded = 0;
   for (const color of COLORS) {
-    const effective = Math.max(
-      0,
-      getGem(card.cost, color) - getGem(player.bonuses, color),
-    );
+    const effective = Math.max(0, getGem(card.cost, color) - getGem(player.bonuses, color));
     const short = Math.max(0, effective - getGem(player.gems, color));
     if (short > 0) {
       shortage[color] = short;
       goldNeeded += short;
     }
   }
-  return {
-    canAfford: getGem(player.gems, "Gold") >= goldNeeded,
-    goldNeeded,
-    shortage,
-  };
+  return { canAfford: getGem(player.gems, "Gold") >= goldNeeded, goldNeeded, shortage };
 }
 
+// Tổng số gem còn thiếu để mua card
 function totalShortage(card: Card, player: Player): number {
   return Object.values(affordCheck(card, player).shortage).reduce(
-    (a, b) => (a ?? 0) + (b ?? 0),
-    0,
+    (a, b) => (a ?? 0) + (b ?? 0), 0,
   ) as number;
 }
 
+// Tìm noble gần đạt nhất dựa trên bonus hiện tại của player
 function nearestNoble(player: Player, nobles: Noble[]) {
   if (!nobles?.length) return null;
   return nobles.reduce(
     (best, noble) => {
       const missing = COLORS.reduce(
-        (sum, c) =>
-          sum +
-          Math.max(
-            0,
-            getGem(noble.requirements, c) - getGem(player.bonuses, c),
-          ),
-        0,
+        (sum, c) => sum + Math.max(0, getGem(noble.requirements, c) - getGem(player.bonuses, c)), 0,
       );
       return !best || missing < best.missing ? { noble, missing } : best;
     },
@@ -114,20 +100,15 @@ function nearestNoble(player: Player, nobles: Noble[]) {
   );
 }
 
+// Trả về danh sách màu bonus còn thiếu để đạt noble gần nhất
 function colorsNeededForNoble(player: Player, nobles: Noble[]): string[] {
   const nearest = nearestNoble(player, nobles);
   if (!nearest) return [];
-  return COLORS.filter(
-    (c) => getGem(nearest.noble.requirements, c) > getGem(player.bonuses, c),
-  );
+  return COLORS.filter((c) => getGem(nearest.noble.requirements, c) > getGem(player.bonuses, c));
 }
 
-function scoreCard(
-  card: Card,
-  player: Player,
-  nobles: Noble[],
-  opponentPoints: number,
-): number {
+// Tính score ưu tiên cho card: điểm cao + mua được + hướng noble + chặn đối thủ
+function scoreCard(card: Card, player: Player, nobles: Noble[], opponentPoints: number): number {
   const { canAfford } = affordCheck(card, player);
   const shortage = totalShortage(card, player);
   const neededColors = colorsNeededForNoble(player, nobles);
@@ -146,13 +127,8 @@ function getAllVisibleCards(state: GameState): Card[] {
   ];
 }
 
-// ─── Suggestion Generators ────────────────────────────────────
-
-function suggestPurchase(
-  player: Player,
-  state: GameState,
-  opponentPoints: number,
-): SuggestedAction[] {
+// Gợi ý mua card: chỉ card mua được, ưu tiên điểm cao
+function suggestPurchase(player: Player, state: GameState, opponentPoints: number): SuggestedAction[] {
   return getAllVisibleCards(state)
     .filter((c) => affordCheck(c, player).canAfford)
     .map((card) => ({
@@ -163,13 +139,17 @@ function suggestPurchase(
     }));
 }
 
+// Gợi ý lấy gem theo rule Splendor:
+// Option A: 2 cùng màu nếu bank >= 4
+// Option B: 3 màu khác nhau nếu có >= 3 màu available
+// Option C: 2 màu khác nhau nếu chỉ còn 2 màu | 2 cùng màu nếu chỉ còn 1 màu và bank >= 4
 function suggestTakeGems(player: Player, state: GameState): SuggestedAction[] {
   const bank = state.board.gemBank;
   const current = totalGems(player.gems);
   const neededColors = colorsNeededForNoble(player, state.board.nobles);
   const suggestions: SuggestedAction[] = [];
 
-  // Option A: 2 same color (bank >= 4)
+  // Option A
   for (const color of COLORS) {
     if (getGem(bank, color) >= 4 && current + 2 <= 10) {
       suggestions.push({
@@ -181,8 +161,9 @@ function suggestTakeGems(player: Player, state: GameState): SuggestedAction[] {
     }
   }
 
-  // Option B: 3 different colors
   const available = COLORS.filter((c) => getGem(bank, c) > 0);
+
+  // Option B
   if (available.length >= 3 && current + 3 <= 10) {
     const prioritized = [
       ...neededColors.filter((c) => available.includes(c)),
@@ -200,149 +181,135 @@ function suggestTakeGems(player: Player, state: GameState): SuggestedAction[] {
     }
   }
 
-  // Option C: fallback khi bank gần cạn (< 3 màu available)
-  if (
-    available.length > 0 &&
-    available.length < 3 &&
-    current + available.length <= 10
-  ) {
+  // Option C
+  if (available.length === 2 && current + 2 <= 10) {
     const gems: Gems = {};
     available.forEach((c) => (gems[c] = 1));
     suggestions.push({
       action: "TAKE_GEMS",
       payload: { gems },
       score: 50,
-      reason: `Take ${available.length} available: ${available.join(", ")}`,
+      reason: `Take 2 available: ${available.join(", ")}`,
+    });
+  } else if (available.length === 1 && getGem(bank, available[0]) >= 4 && current + 2 <= 10) {
+    suggestions.push({
+      action: "TAKE_GEMS",
+      payload: { gems: { [available[0]]: 2 } },
+      score: 50,
+      reason: `Take 2 ${available[0]} (only color left, bank=${getGem(bank, available[0])})`,
     });
   }
 
   return suggestions;
 }
 
-function suggestReserve(
-  player: Player,
-  state: GameState,
-  opponentPoints: number,
-): SuggestedAction[] {
+// Gợi ý reserve card: ưu tiên card điểm cao, bỏ qua nếu đã có 3 reserved
+function suggestReserve(player: Player, state: GameState, opponentPoints: number): SuggestedAction[] {
   if (player.reservedCards.length >= 3) return [];
-  return getAllVisibleCards(state)
-    .filter((c) => c.points >= 3)
+  const allCards = getAllVisibleCards(state);
+  if (allCards.length === 0) return [];
+  return allCards
     .sort((a, b) => b.points - a.points)
     .slice(0, 2)
     .map((card) => ({
       action: "RESERVE_CARD",
       payload: { cardId: card.cardId },
-      score: opponentPoints >= 10 ? 100 : 30,
+      score: opponentPoints >= 10 ? 100 : 40,
       reason: `Reserve lv${card.level} +${card.points}pts`,
     }));
 }
 
-function generateSuggestions(
-  state: GameState,
-  botId: string,
-): SuggestedAction[] {
+// Tổng hợp tất cả suggestions, fallback PASS_TURN nếu không có action hợp lệ nào
+function generateSuggestions(state: GameState, botId: string): SuggestedAction[] {
   const player = state.players[botId];
   if (!player) return [];
   const opponentId = Object.keys(state.players).find((id) => id !== botId);
-  const opponentPoints = opponentId
-    ? (state.players[opponentId]?.points ?? 0)
-    : 0;
-  return [
+  const opponentPoints = opponentId ? (state.players[opponentId]?.points ?? 0) : 0;
+
+  const suggestions = [
     ...suggestPurchase(player, state, opponentPoints),
     ...suggestTakeGems(player, state),
     ...suggestReserve(player, state, opponentPoints),
   ]
     .sort((a, b) => b.score - a.score)
     .slice(0, 5);
+
+  if (suggestions.length === 0) {
+    suggestions.push({
+      action: "PASS_TURN",
+      payload: {},
+      score: 0,
+      reason: "No valid actions available",
+    });
+  }
+
+  return suggestions;
 }
 
-// ─── Payload Validator ────────────────────────────────────────
-// Validate và fix payload LLM trả về trước khi gửi tới BE
-
+// Validate và fix payload LLM trả về:
+// - Fix format sai (thiếu wrapper gems, cardId rỗng...)
+// - Validate gem có thực sự còn trên board không
+// - Fallback về heuristic suggestion nếu không fix được
 function validateAndFixPayload(
-  result: {
-    action: string;
-    payload: Record<string, unknown>;
-    reasoning: string;
-  },
+  result: { action: string; payload: Record<string, unknown>; reasoning: string },
   suggestions: SuggestedAction[],
+  gameState: GameState,
 ): { action: string; payload: Record<string, unknown>; reasoning: string } {
   const action = result.action;
   const payload = result.payload;
+  const bank = gameState.board.gemBank;
 
   switch (action) {
     case "TAKE_GEMS": {
-      // Case 1: payload đúng format { gems: {...} }
-      if (payload.gems && typeof payload.gems === "object") return result;
-
-      // Case 2: LLM trả { White: 1, Blue: 1 } không có wrapper "gems"
-      const colorKeys = COLORS.filter((c) => typeof payload[c] === "number");
-      if (colorKeys.length > 0) {
-        console.warn("[Validator] TAKE_GEMS missing 'gems' wrapper, fixing...");
-        const gems: Record<string, number> = {};
-        colorKeys.forEach((c) => (gems[c] = payload[c] as number));
-        return { ...result, payload: { gems } };
-      }
-
-      // Case 3: payload hoàn toàn sai → dùng suggestion tốt nhất
-      const bestTake = suggestions.find((s) => s.action === "TAKE_GEMS");
-      if (bestTake) {
-        console.warn(
-          "[Validator] TAKE_GEMS invalid payload, using heuristic suggestion",
+      if (payload.gems && typeof payload.gems === "object") {
+        const requestedGems = payload.gems as Record<string, number>;
+        const isValid = Object.entries(requestedGems).every(
+          ([color, amount]) => (bank[color] ?? 0) >= amount,
         );
-        return {
-          action: bestTake.action,
-          payload: bestTake.payload,
-          reasoning: bestTake.reason,
-        };
+        if (isValid) return result;
+        console.warn("[Validator] TAKE_GEMS gems not available on board, using heuristic");
+      } else {
+        const colorKeys = COLORS.filter((c) => typeof payload[c] === "number");
+        if (colorKeys.length > 0) {
+          console.warn("[Validator] TAKE_GEMS missing 'gems' wrapper, fixing...");
+          const gems: Record<string, number> = {};
+          colorKeys.forEach((c) => (gems[c] = payload[c] as number));
+          const isValid = Object.entries(gems).every(([color, amount]) => (bank[color] ?? 0) >= amount);
+          if (isValid) return { ...result, payload: { gems } };
+        }
       }
-      break;
+
+      const bestTake = suggestions.find((s) => s.action === "TAKE_GEMS");
+      if (bestTake) return { action: bestTake.action, payload: bestTake.payload, reasoning: bestTake.reason };
+
+      const bestReserve = suggestions.find((s) => s.action === "RESERVE_CARD");
+      if (bestReserve) return { action: bestReserve.action, payload: bestReserve.payload, reasoning: bestReserve.reason };
+
+      return { action: "PASS_TURN", payload: {}, reasoning: "no gems available" };
     }
 
     case "PURCHASE_CARD": {
-      // Phải có cardId dạng string
-      if (typeof payload.cardId === "string" && payload.cardId.length > 0)
-        return result;
-
-      // Fallback heuristic
-      const bestPurchase = suggestions.find(
-        (s) => s.action === "PURCHASE_CARD",
-      );
+      if (typeof payload.cardId === "string" && payload.cardId.length > 0) return result;
+      const bestPurchase = suggestions.find((s) => s.action === "PURCHASE_CARD");
       if (bestPurchase) {
-        console.warn(
-          "[Validator] PURCHASE_CARD invalid cardId, using heuristic suggestion",
-        );
-        return {
-          action: bestPurchase.action,
-          payload: bestPurchase.payload,
-          reasoning: bestPurchase.reason,
-        };
+        console.warn("[Validator] PURCHASE_CARD invalid cardId, using heuristic suggestion");
+        return { action: bestPurchase.action, payload: bestPurchase.payload, reasoning: bestPurchase.reason };
       }
       break;
     }
 
     case "RESERVE_CARD": {
-      if (typeof payload.cardId === "string" && payload.cardId.length > 0)
-        return result;
-
+      if (typeof payload.cardId === "string" && payload.cardId.length > 0) return result;
       const bestReserve = suggestions.find((s) => s.action === "RESERVE_CARD");
       if (bestReserve) {
-        console.warn(
-          "[Validator] RESERVE_CARD invalid cardId, using heuristic suggestion",
-        );
-        return {
-          action: bestReserve.action,
-          payload: bestReserve.payload,
-          reasoning: bestReserve.reason,
-        };
+        console.warn("[Validator] RESERVE_CARD invalid cardId, using heuristic suggestion");
+        return { action: bestReserve.action, payload: bestReserve.payload, reasoning: bestReserve.reason };
       }
       break;
     }
 
     case "DISCARD_GEMS": {
       if (payload.gems && typeof payload.gems === "object") return result;
-
-      // Fix wrapper nếu thiếu
       const colorKeys = COLORS.filter((c) => typeof payload[c] === "number");
       if (colorKeys.length > 0) {
         const gems: Record<string, number> = {};
@@ -353,52 +320,43 @@ function validateAndFixPayload(
     }
 
     case "SELECT_NOBLE": {
-      if (typeof payload.nobleId === "string" && payload.nobleId.length > 0)
-        return result;
+      if (typeof payload.nobleId === "string" && payload.nobleId.length > 0) return result;
       break;
+    }
+
+    case "PASS_TURN": {
+      return { action: "PASS_TURN", payload: {}, reasoning: result.reasoning };
     }
   }
 
-  // Nếu không fix được → dùng top suggestion từ heuristic
-  console.warn(
-    `[Validator] Cannot fix ${action} payload, falling back to top suggestion`,
-  );
+  console.warn(`[Validator] Cannot fix ${action} payload, falling back to top suggestion`);
   if (suggestions.length > 0) {
-    return {
-      action: suggestions[0].action,
-      payload: suggestions[0].payload,
-      reasoning: suggestions[0].reason,
-    };
+    return { action: suggestions[0].action, payload: suggestions[0].payload, reasoning: suggestions[0].reason };
   }
 
-  // Hard fallback
-  return {
-    action: "TAKE_GEMS",
-    payload: { gems: { White: 1, Blue: 1, Green: 1 } },
-    reasoning: "hard fallback",
-  };
+  return { action: "PASS_TURN", payload: {}, reasoning: "hard fallback" };
 }
 
-// ─── Prompt ───────────────────────────────────────────────────
 const prompt = ChatPromptTemplate.fromMessages([
   [
     "system",
     `You are playing Splendor. Goal: reach 15 prestige points first.
 The Heuristic Engine has pre-calculated valid actions. Pick the BEST one.
 
-Priority: 1) Buy card 2) Take gems for noble 3) Reserve to block
+Priority: 1) Buy card 2) Take gems for noble 3) Reserve to block 4) Pass turn
 
 STRICT PAYLOAD RULE — copy EXACTLY from suggestions, do NOT restructure:
-- TAKE_GEMS:    {{ "gems": {{ "White": 1, "Blue": 1, "Green": 1 }} }}  (3 diff colors)
-               OR {{ "gems": {{ "Red": 2 }} }}  (2 same, only if bank >= 4)
+- TAKE_GEMS:     {{ "gems": {{ "White": 1, "Blue": 1, "Green": 1 }} }}  (3 diff colors)
+                OR {{ "gems": {{ "Red": 2 }} }}  (2 same, only if bank >= 4)
 - PURCHASE_CARD: {{ "cardId": "<id>" }}
 - RESERVE_CARD:  {{ "cardId": "<id>" }}
 - DISCARD_GEMS:  {{ "gems": {{ "White": 1 }} }}
 - SELECT_NOBLE:  {{ "nobleId": "<id>" }}
+- PASS_TURN:     {{}}  (only when no valid action exists)
 
 Return ONLY valid JSON:
 {{
-  "action": "TAKE_GEMS"|"PURCHASE_CARD"|"RESERVE_CARD"|"DISCARD_GEMS"|"SELECT_NOBLE",
+  "action": "TAKE_GEMS"|"PURCHASE_CARD"|"RESERVE_CARD"|"DISCARD_GEMS"|"SELECT_NOBLE"|"PASS_TURN",
   "payload": {{ ... }},
   "reasoning": "<max 15 words>"
 }}`,
@@ -417,6 +375,7 @@ Choose the best action.`,
 ]);
 
 const chain = prompt.pipe(llm).pipe(new StringOutputParser());
+
 const ActionSchema = z.object({
   action: z.enum([
     "TAKE_GEMS",
@@ -424,70 +383,43 @@ const ActionSchema = z.object({
     "RESERVE_CARD",
     "DISCARD_GEMS",
     "SELECT_NOBLE",
+    "PASS_TURN",
   ]),
   payload: z.record(z.string(), z.unknown()),
   reasoning: z.string(),
 });
 
-// ─── POST /decide ─────────────────────────────────────────────
 app.post("/decide", async (req: Request, res: Response) => {
   try {
     const { gameState } = req.body as { gameState: GameState };
-    if (!gameState)
-      return res.status(400).json({ error: "gameState is required" });
+    if (!gameState) return res.status(400).json({ error: "gameState is required" });
 
     const botId = gameState?.turn?.currentPlayer ?? "BOT";
     const player = gameState?.players?.[botId];
-    const opponentId = Object.keys(gameState.players).find(
-      (id) => id !== botId,
-    );
-    const opponentPoints = opponentId
-      ? (gameState.players[opponentId]?.points ?? 0)
-      : 0;
+    const opponentId = Object.keys(gameState.players).find((id) => id !== botId);
+    const opponentPoints = opponentId ? (gameState.players[opponentId]?.points ?? 0) : 0;
     const totalGemsCount = player ? totalGems(player.gems) : 0;
 
-    console.log(
-      `\n[Agent] Turn #${gameState.turn?.turnNumber} | Bot: ${botId} | Points: ${player?.points} | Gems: ${totalGemsCount}`,
-    );
+    console.log(`\n[Agent] Turn #${gameState.turn?.turnNumber} | Bot: ${botId} | Points: ${player?.points} | Gems: ${totalGemsCount}`);
 
-    // Heuristic Engine
     const suggestions = generateSuggestions(gameState, botId);
-    console.log(
-      `[Heuristic] Suggestions:`,
-      suggestions.map((s) => `${s.action}(${s.score})`).join(", "),
-    );
+    console.log(`[Heuristic] Suggestions:`, suggestions.map((s) => `${s.action}(${s.score})`).join(", "));
 
-    // Fast path: PURCHASE score cao → skip LLM
-    if (
-      suggestions[0]?.score >= 500 &&
-      suggestions[0]?.action === "PURCHASE_CARD"
-    ) {
+    // Fast path: mua được card điểm cao → skip LLM
+    if (suggestions[0]?.score >= 500 && suggestions[0]?.action === "PURCHASE_CARD") {
       console.log(`[Heuristic] Fast purchase, skipping LLM`);
-      return res.json({
-        action: suggestions[0].action,
-        payload: suggestions[0].payload,
-        reasoning: suggestions[0].reason,
-      });
+      return res.json({ action: suggestions[0].action, payload: suggestions[0].payload, reasoning: suggestions[0].reason });
     }
 
-    // Fallback nếu không có suggestions
-    if (!suggestions.length) {
-      return res.json({
-        action: "TAKE_GEMS",
-        payload: { gems: { White: 1, Blue: 1, Green: 1 } },
-        reasoning: "no suggestions",
-      });
+    // Fast path: không có action nào hợp lệ
+    if (suggestions[0]?.action === "PASS_TURN") {
+      console.log(`[Heuristic] No valid actions, passing turn`);
+      return res.json({ action: "PASS_TURN", payload: {}, reasoning: "no valid actions" });
     }
 
-    // Noble progress
-    const nearest = player
-      ? nearestNoble(player, gameState.board?.nobles ?? [])
-      : null;
-    const nobleProgress = nearest
-      ? `Nearest noble: ${nearest.missing} gems away`
-      : "No nobles";
+    const nearest = player ? nearestNoble(player, gameState.board?.nobles ?? []) : null;
+    const nobleProgress = nearest ? `Nearest noble: ${nearest.missing} gems away` : "No nobles";
 
-    // LLM chọn từ suggestions
     const raw = await chain.invoke({
       botId,
       turnNumber: gameState.turn?.turnNumber,
@@ -497,28 +429,19 @@ app.post("/decide", async (req: Request, res: Response) => {
       opponentPoints,
       nobleProgress,
       suggestions: suggestions
-        .map(
-          (s, i) =>
-            `${i + 1}. ${s.action} | ${JSON.stringify(s.payload)} | score:${s.score} | ${s.reason}`,
-        )
+        .map((s, i) => `${i + 1}. ${s.action} | ${JSON.stringify(s.payload)} | score:${s.score} | ${s.reason}`)
         .join("\n"),
     });
 
     const cleaned = raw.replace(/```json\n?|```\n?/g, "").trim();
     const parsed = ActionSchema.parse(JSON.parse(cleaned));
-
-    // ← Validate và fix payload trước khi gửi về BE
-    const validated = validateAndFixPayload(parsed, suggestions);
+    const validated = validateAndFixPayload(parsed, suggestions, gameState);
 
     console.log(`[Agent] → ${validated.action}: ${validated.reasoning}`);
     return res.json(validated);
   } catch (err) {
     console.error("[Agent] Error:", err);
-    return res.status(500).json({
-      action: "TAKE_GEMS",
-      payload: { gems: { White: 1, Blue: 1, Green: 1 } },
-      reasoning: "fallback due to agent error",
-    });
+    return res.status(500).json({ action: "PASS_TURN", payload: {}, reasoning: "fallback due to agent error" });
   }
 });
 
