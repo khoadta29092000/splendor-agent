@@ -10,7 +10,7 @@ app.use(express.json({ limit: "1mb" }));
 
 const llm = new ChatOpenAI({
   modelName: "gpt-4o-mini",
-  temperature: 0,           // FIX: 0 thay vì 0.1 — game logic cần deterministic
+  temperature: 0, // FIX: 0 thay vì 0.1 — game logic cần deterministic
   openAIApiKey: process.env.OPENAI_API_KEY,
 });
 
@@ -19,8 +19,12 @@ const llm = new ChatOpenAI({
 // ============================================================================
 
 interface Gems {
-  White?: number; Blue?: number; Green?: number;
-  Red?: number; Black?: number; Gold?: number;
+  White?: number;
+  Blue?: number;
+  Green?: number;
+  Red?: number;
+  Black?: number;
+  Gold?: number;
   [key: string]: number | undefined;
 }
 
@@ -31,9 +35,9 @@ interface CardWithAffordability {
   points: number;
   bonusColor: string;
   cost: Gems;
-  shortfall: Gems;      // C# pre-computed
-  goldNeeded: number;   // C# pre-computed
-  canAfford: boolean;   // C# pre-computed
+  shortfall: Gems; // C# pre-computed
+  goldNeeded: number; // C# pre-computed
+  canAfford: boolean; // C# pre-computed
   isReserved: boolean;
 }
 
@@ -50,7 +54,7 @@ interface DecisionContext {
   bot: {
     points: number;
     gems: Gems;
-    totalGems: number;    // C# pre-computed
+    totalGems: number; // C# pre-computed
     bonuses: Gems;
     reservedCount: number;
   };
@@ -63,7 +67,7 @@ interface DecisionContext {
     gemBank: Gems;
     nobles: NobleWithProgress[];
   };
-  cards: CardWithAffordability[];   // visible + reserved, pre-computed
+  cards: CardWithAffordability[]; // visible + reserved, pre-computed
   computed: {
     canBuyAny: boolean;
     nearestNoble: NobleWithProgress | null;
@@ -73,10 +77,17 @@ interface DecisionContext {
 
 // Input cũ /decide — vẫn giữ để backward compat nếu cần
 interface GameState {
-  players: Record<string, {
-    playerId: string; gems: Gems; bonuses: Gems;
-    reservedCards: string[]; purchasedCards: string[]; points: number;
-  }>;
+  players: Record<
+    string,
+    {
+      playerId: string;
+      gems: Gems;
+      bonuses: Gems;
+      reservedCards: string[];
+      purchasedCards: string[];
+      points: number;
+    }
+  >;
   board: {
     gemBank: Gems;
     visibleCards: { level1: any[]; level2: any[]; level3: any[] };
@@ -105,11 +116,11 @@ STRATEGY RULES (in order):
 4. In endgame (isEndgame=true) → maximize points per turn, ignore noble
 
 Return ONLY valid JSON — no markdown, no preamble:
-{
+{{
   "targetCardId": "<cardId from cards list, or null>",
   "targetNobleId": "<nobleId from nobles list, or null>",
   "reasoning": "<max 20 words>"
-}`,
+}}`,
   ],
   [
     "human",
@@ -128,44 +139,54 @@ Pick the best target card to farm gems toward.`,
 const strategyChain = strategyPrompt.pipe(llm).pipe(new StringOutputParser());
 
 const StrategySchema = z.object({
-  targetCardId:  z.string().nullable(),
+  targetCardId: z.string().nullable(),
   targetNobleId: z.string().nullable(),
-  reasoning:     z.string(),
+  reasoning: z.string(),
 });
 
 app.post("/strategy", async (req: Request, res: Response) => {
   try {
     const ctx = req.body as DecisionContext;
-    if (!ctx?.cards) return res.status(400).json({ error: "DecisionContext required" });
+    if (!ctx?.cards)
+      return res.status(400).json({ error: "DecisionContext required" });
 
     const { bot, opponent, computed, board } = ctx;
 
-    console.log(`\n[Strategy] Turn #${ctx.turn.number} | Bot ${bot.points}pts | Opp ${opponent.points}pts | Endgame=${computed.isEndgame}`);
+    console.log(
+      `\n[Strategy] Turn #${ctx.turn.number} | Bot ${bot.points}pts | Opp ${opponent.points}pts | Endgame=${computed.isEndgame}`,
+    );
 
     // Fast path: có card mua được với điểm cao → target ngay
     const fastTarget = ctx.cards
-      .filter(c => c.canAfford && c.points >= 3)
-      .sort((a, b) => b.points * 100 + b.level * 10 - (a.points * 100 + a.level * 10))[0];
+      .filter((c) => c.canAfford && c.points >= 3)
+      .sort(
+        (a, b) =>
+          b.points * 100 + b.level * 10 - (a.points * 100 + a.level * 10),
+      )[0];
 
     if (fastTarget) {
-      console.log(`[Strategy] FastTarget ${fastTarget.cardId} lv${fastTarget.level} +${fastTarget.points}pts`);
+      console.log(
+        `[Strategy] FastTarget ${fastTarget.cardId} lv${fastTarget.level} +${fastTarget.points}pts`,
+      );
       return res.json({
-        targetCardId:  fastTarget.cardId,
+        targetCardId: fastTarget.cardId,
         targetNobleId: computed.nearestNoble?.nobleId ?? null,
-        reasoning:     `Fast target: lv${fastTarget.level} +${fastTarget.points}pts already affordable`,
+        reasoning: `Fast target: lv${fastTarget.level} +${fastTarget.points}pts already affordable`,
       });
     }
 
     // Prompt cards — chỉ relevant info, không có imageUrl
     const cardsStr = ctx.cards
-      .map(c => {
+      .map((c) => {
         const shortfallStr = Object.entries(c.shortfall)
           .map(([k, v]) => `${k}:${v}`)
           .join(",");
-        return `[${c.cardId}] lv${c.level} +${c.points}pts bonus:${c.bonusColor}` +
-               ` canAfford:${c.canAfford} goldNeeded:${c.goldNeeded}` +
-               ` shortfall:{${shortfallStr}}` +
-               (c.isReserved ? " [RESERVED]" : "");
+        return (
+          `[${c.cardId}] lv${c.level} +${c.points}pts bonus:${c.bonusColor}` +
+          ` canAfford:${c.canAfford} goldNeeded:${c.goldNeeded}` +
+          ` shortfall:{${shortfallStr}}` +
+          (c.isReserved ? " [RESERVED]" : "")
+        );
       })
       .join("\n");
 
@@ -174,49 +195,55 @@ app.post("/strategy", async (req: Request, res: Response) => {
       : "none";
 
     const raw = await strategyChain.invoke({
-      turnNumber:     ctx.turn.number,
-      myPoints:       bot.points,
+      turnNumber: ctx.turn.number,
+      myPoints: bot.points,
       opponentPoints: opponent.points,
-      isEndgame:      computed.isEndgame,
-      totalGems:      bot.totalGems,
-      myGems:         JSON.stringify(bot.gems),
-      myBonuses:      JSON.stringify(bot.bonuses),
-      nearestNoble:   nearestNobleStr,
-      cards:          cardsStr,
+      isEndgame: computed.isEndgame,
+      totalGems: bot.totalGems,
+      myGems: JSON.stringify(bot.gems),
+      myBonuses: JSON.stringify(bot.bonuses),
+      nearestNoble: nearestNobleStr,
+      cards: cardsStr,
     });
 
     const cleaned = raw.replace(/```json\n?|```\n?/g, "").trim();
-    const parsed  = StrategySchema.parse(JSON.parse(cleaned));
+    const parsed = StrategySchema.parse(JSON.parse(cleaned));
 
     // Validate targetCardId tồn tại trong card list
     if (parsed.targetCardId) {
-      const exists = ctx.cards.some(c => c.cardId === parsed.targetCardId);
+      const exists = ctx.cards.some((c) => c.cardId === parsed.targetCardId);
       if (!exists) {
-        console.warn(`[Strategy] LLM returned unknown cardId=${parsed.targetCardId}, using heuristic`);
+        console.warn(
+          `[Strategy] LLM returned unknown cardId=${parsed.targetCardId}, using heuristic`,
+        );
         // Fallback: card gần mua nhất + điểm cao
-        const fallback = ctx.cards
-          .sort((a, b) => {
-            const scoreA = a.points * 100 - a.goldNeeded * 20;
-            const scoreB = b.points * 100 - b.goldNeeded * 20;
-            return scoreB - scoreA;
-          })[0];
+        const fallback = ctx.cards.sort((a, b) => {
+          const scoreA = a.points * 100 - a.goldNeeded * 20;
+          const scoreB = b.points * 100 - b.goldNeeded * 20;
+          return scoreB - scoreA;
+        })[0];
         parsed.targetCardId = fallback?.cardId ?? null;
       }
     }
 
-    console.log(`[Strategy] → target=${parsed.targetCardId} noble=${parsed.targetNobleId} | ${parsed.reasoning}`);
+    console.log(
+      `[Strategy] → target=${parsed.targetCardId} noble=${parsed.targetNobleId} | ${parsed.reasoning}`,
+    );
     return res.json(parsed);
-
   } catch (err) {
     console.error("[Strategy] Error:", err);
     // Fallback heuristic nếu LLM fail
     const ctx = req.body as DecisionContext;
-    const fallback = ctx?.cards
-      ?.sort((a, b) => b.points * 100 - b.goldNeeded * 20 - (a.points * 100 - a.goldNeeded * 20))[0];
+    const fallback = ctx?.cards?.sort(
+      (a, b) =>
+        b.points * 100 -
+        b.goldNeeded * 20 -
+        (a.points * 100 - a.goldNeeded * 20),
+    )[0];
     return res.json({
-      targetCardId:  fallback?.cardId ?? null,
+      targetCardId: fallback?.cardId ?? null,
       targetNobleId: null,
-      reasoning:     "fallback heuristic",
+      reasoning: "fallback heuristic",
     });
   }
 });
@@ -229,17 +256,27 @@ app.post("/strategy", async (req: Request, res: Response) => {
 app.post("/decide", async (req: Request, res: Response) => {
   try {
     const { gameState } = req.body as { gameState: GameState };
-    if (!gameState) return res.status(400).json({ error: "gameState is required" });
+    if (!gameState)
+      return res.status(400).json({ error: "gameState is required" });
 
-    const botId    = gameState?.turn?.currentPlayer ?? "BOT";
-    const player   = gameState?.players?.[botId];
+    const botId = gameState?.turn?.currentPlayer ?? "BOT";
+    const player = gameState?.players?.[botId];
     if (!player) return res.status(400).json({ error: "bot player not found" });
 
-    const opponentId     = Object.keys(gameState.players).find(id => id !== botId);
-    const opponentPoints = opponentId ? (gameState.players[opponentId]?.points ?? 0) : 0;
-    const currentGems    = Object.values(player.gems).reduce((a, b) => (a ?? 0) + (b ?? 0), 0) as number;
+    const opponentId = Object.keys(gameState.players).find(
+      (id) => id !== botId,
+    );
+    const opponentPoints = opponentId
+      ? (gameState.players[opponentId]?.points ?? 0)
+      : 0;
+    const currentGems = Object.values(player.gems).reduce(
+      (a, b) => (a ?? 0) + (b ?? 0),
+      0,
+    ) as number;
 
-    console.log(`\n[Decide/Legacy] Turn #${gameState.turn?.turnNumber} | Bot ${player.points}pts | Gems ${currentGems}`);
+    console.log(
+      `\n[Decide/Legacy] Turn #${gameState.turn?.turnNumber} | Bot ${player.points}pts | Gems ${currentGems}`,
+    );
 
     // FIX: Cho phép lấy gem kể cả khi currentGems >= 10 — BE sẽ trigger discard
     const allCards = [
@@ -250,15 +287,23 @@ app.post("/decide", async (req: Request, res: Response) => {
     const bank = gameState.board.gemBank;
 
     // Tìm card tốt nhất mua được
-    const affordable = allCards.filter(c => {
-      let goldNeeded = 0;
-      for (const color of COLORS) {
-        const eff  = Math.max(0, getGem(c.cost, color) - getGem(player.bonuses, color));
-        const diff = Math.max(0, eff - getGem(player.gems, color));
-        goldNeeded += diff;
-      }
-      return getGem(player.gems, "Gold") >= goldNeeded;
-    }).sort((a, b) => b.points * 100 + b.level * 10 - (a.points * 100 + a.level * 10));
+    const affordable = allCards
+      .filter((c) => {
+        let goldNeeded = 0;
+        for (const color of COLORS) {
+          const eff = Math.max(
+            0,
+            getGem(c.cost, color) - getGem(player.bonuses, color),
+          );
+          const diff = Math.max(0, eff - getGem(player.gems, color));
+          goldNeeded += diff;
+        }
+        return getGem(player.gems, "Gold") >= goldNeeded;
+      })
+      .sort(
+        (a, b) =>
+          b.points * 100 + b.level * 10 - (a.points * 100 + a.level * 10),
+      );
 
     if (affordable.length > 0) {
       return res.json({
@@ -269,16 +314,24 @@ app.post("/decide", async (req: Request, res: Response) => {
     }
 
     // FIX: Lấy gem — không block khi currentGems >= 10
-    const available = COLORS.filter(c => getGem(bank, c) > 0);
+    const available = COLORS.filter((c) => getGem(bank, c) > 0);
     if (available.length >= 3) {
       const gems: Gems = {};
-      available.slice(0, 3).forEach(c => (gems[c] = 1));
-      return res.json({ action: "TAKE_GEMS", payload: { gems }, reasoning: "Take 3 different gems" });
+      available.slice(0, 3).forEach((c) => (gems[c] = 1));
+      return res.json({
+        action: "TAKE_GEMS",
+        payload: { gems },
+        reasoning: "Take 3 different gems",
+      });
     }
     if (available.length === 2) {
       const gems: Gems = {};
-      available.forEach(c => (gems[c] = 1));
-      return res.json({ action: "TAKE_GEMS", payload: { gems }, reasoning: "Take 2 available gems" });
+      available.forEach((c) => (gems[c] = 1));
+      return res.json({
+        action: "TAKE_GEMS",
+        payload: { gems },
+        reasoning: "Take 2 available gems",
+      });
     }
     if (available.length === 1 && getGem(bank, available[0]) >= 4) {
       return res.json({
@@ -288,11 +341,16 @@ app.post("/decide", async (req: Request, res: Response) => {
       });
     }
 
-    return res.json({ action: "PASS_TURN", payload: {}, reasoning: "no valid actions" });
-
+    return res.json({
+      action: "PASS_TURN",
+      payload: {},
+      reasoning: "no valid actions",
+    });
   } catch (err) {
     console.error("[Decide/Legacy] Error:", err);
-    return res.status(500).json({ action: "PASS_TURN", payload: {}, reasoning: "error fallback" });
+    return res
+      .status(500)
+      .json({ action: "PASS_TURN", payload: {}, reasoning: "error fallback" });
   }
 });
 
@@ -301,12 +359,14 @@ app.post("/decide", async (req: Request, res: Response) => {
 // ============================================================================
 
 app.get("/health", (_: Request, res: Response) =>
-  res.json({ status: "ok", endpoints: ["/strategy", "/decide", "/health"] })
+  res.json({ status: "ok", endpoints: ["/strategy", "/decide", "/health"] }),
 );
 
 const PORT = process.env.PORT || 4000;
 app.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`Splendor Strategy Agent → http://localhost:${PORT}`);
-  console.log(`  POST /strategy — nhận DecisionContext, trả targetCardId (LangChainBotService mới)`);
+  console.log(
+    `  POST /strategy — nhận DecisionContext, trả targetCardId (LangChainBotService mới)`,
+  );
   console.log(`  POST /decide   — legacy endpoint (LangChainBotService cũ)`);
 });
